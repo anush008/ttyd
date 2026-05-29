@@ -191,7 +191,7 @@ static bool check_auth(struct lws *wsi, struct pss_tty *pss) {
 
   if (server->credential != NULL) {
     char buf[256];
-    size_t n = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
+    int n = lws_hdr_copy(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_AUTHORIZATION);
     return n >= 7 && strstr(buf, "Basic ") && !strcmp(buf + 6, server->credential);
   }
 
@@ -285,6 +285,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       break;
 
     case LWS_CALLBACK_RECEIVE:
+      if (len == 0 && pss->buffer == NULL) break;
       if (pss->buffer == NULL) {
         pss->buffer = xmalloc(len);
         pss->len = len;

@@ -428,6 +428,10 @@ int main(int argc, char **argv) {
       case 'I':
         if (!strncmp(optarg, "~/", 2)) {
           const char *home = getenv("HOME");
+          if (home == NULL) {
+            fprintf(stderr, "ttyd: cannot expand '~/' in index path: HOME is not set\n");
+            return -1;
+          }
           size_t index_len = strlen(home) + strlen(optarg);
           server->index = malloc(index_len);
           snprintf(server->index, index_len, "%s%s", home, optarg + 1);
@@ -446,7 +450,8 @@ int main(int argc, char **argv) {
         break;
       case 'b': {
         char path[128];
-        strncpy(path, optarg, 128);
+        strncpy(path, optarg, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
         size_t len = strlen(path);
         while (len && path[len - 1] == '/') path[--len] = 0;  // trim trailing /
         if (!len) break;

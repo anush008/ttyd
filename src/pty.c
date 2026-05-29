@@ -207,14 +207,15 @@ static WCHAR *join_args(char **argv) {
   char **ptr = argv;
   for (; *ptr; ptr++) {
     char *quoted = (char *) quote_arg(*ptr);
-    size_t arg_len = strlen(args) + 1;
-    size_t quoted_len = strlen(quoted);
-    if (arg_len == 1) memset(args, 0, 2);
-    if (arg_len != 1) strcat(args, " ");
-    strncat(args, quoted, quoted_len);
+    size_t cur_len = strlen(args);
+    size_t avail = sizeof(args) - cur_len - 1;  // space left, reserving NUL
+    if (cur_len != 0 && avail > 0) {
+      strncat(args, " ", avail);
+      avail--;
+    }
+    strncat(args, quoted, avail);
     if (quoted != *ptr) free(quoted);
   }
-  if (args[255] != '\0') args[255] = '\0';  // truncate
   return to_utf16(args);
 }
 
