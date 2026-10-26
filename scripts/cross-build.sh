@@ -10,15 +10,29 @@ STAGE_ROOT="${STAGE_ROOT:-/opt/stage}"
 BUILD_ROOT="${BUILD_ROOT:-/opt/build}"
 BUILD_TARGET="${BUILD_TARGET:-x86_64}"
 
-ZLIB_VERSION="${ZLIB_VERSION:-1.3.2}"
-JSON_C_VERSION="${JSON_C_VERSION:-0.18}"
-OPENSSL_VERSION="${OPENSSL_VERSION:-3.6.1}"
-LIBUV_VERSION="${LIBUV_VERSION:-1.52.1}"
-LIBWEBSOCKETS_VERSION="${LIBWEBSOCKETS_VERSION:-4.5.7}"
+ZLIB_VERSION="1.3.2"
+ZLIB_SHA256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+JSON_C_VERSION="0.19"
+JSON_C_SHA256="37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de"
+OPENSSL_VERSION="4.1.0"
+OPENSSL_SHA256="50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd"
+LIBUV_VERSION="1.53.0"
+LIBUV_SHA256="cb0d6dd2128d5a95bd242c6cc982a24fe608fa93da57b6b4ec763b0018c53e64"
+LIBWEBSOCKETS_VERSION="5.0.0"
+LIBWEBSOCKETS_COMMIT="2491a1b101283cf7886d05033345b7e821825319"
+
+# download a tarball, verify its sha256 and extract it to BUILD_DIR
+fetch() {
+    local url="$1" sha256="$2" file
+    file="${BUILD_DIR}/$(basename "${url}")"
+    curl -fSsLo "${file}" "${url}"
+    echo "${sha256}  ${file}" | sha256sum -c -
+    tar xzf "${file}" -C "${BUILD_DIR}"
+}
 
 build_zlib() {
     echo "=== Building zlib-${ZLIB_VERSION} (${TARGET})..."
-    curl -fSsLo- "https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz" | tar xz -C "${BUILD_DIR}"
+    fetch "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" "${ZLIB_SHA256}"
     pushd "${BUILD_DIR}"/zlib-"${ZLIB_VERSION}"
         env CHOST="${TARGET}" ./configure --static --archs="-fPIC" --prefix="${STAGE_DIR}" --disable-crcvx
         make -j"$(nproc)" install
@@ -27,7 +41,7 @@ build_zlib() {
 
 build_json-c() {
     echo "=== Building json-c-${JSON_C_VERSION} (${TARGET})..."
-    curl -fSsLo- "https://s3.amazonaws.com/json-c_releases/releases/json-c-${JSON_C_VERSION}.tar.gz" | tar xz -C "${BUILD_DIR}"
+    fetch "https://s3.amazonaws.com/json-c_releases/releases/json-c-${JSON_C_VERSION}.tar.gz" "${JSON_C_SHA256}"
     pushd "${BUILD_DIR}/json-c-${JSON_C_VERSION}"
         rm -rf build && mkdir -p build && cd build
         cmake -DCMAKE_TOOLCHAIN_FILE="${BUILD_DIR}/cross-${TARGET}.cmake" \
@@ -60,24 +74,21 @@ map_openssl_target() {
 build_openssl() {
     openssl_target=$(map_openssl_target "${BUILD_TARGET}")
     echo "=== Building openssl-${OPENSSL_VERSION} (${openssl_target})..."
-    curl -sLo- "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" | tar xz -C "${BUILD_DIR}"
+    fetch "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" "${OPENSSL_SHA256}"
     pushd "${BUILD_DIR}/openssl-${OPENSSL_VERSION}"
         openssl_cflags="-fPIC -latomic"
         case ${BUILD_TARGET} in
             s390x) openssl_cflags="${openssl_cflags} -march=z10" ;;
-            win32)
-                curl -sLo- https://github.com/openssl/openssl/pull/29826.patch | patch -p1
-                ;;
         esac
         env CC=gcc CROSS_COMPILE="${TARGET}-" CFLAGS="${openssl_cflags}" \
-            ./Configure "${openssl_target}" no-ssl3 no-err -DOPENSSL_SMALL_FOOTPRINT --prefix="${STAGE_DIR}" \
+            ./Configure "${openssl_target}" no-err -DOPENSSL_SMALL_FOOTPRINT --prefix="${STAGE_DIR}" \
         && make -j"$(nproc)" all > /dev/null && make install_sw
     popd
 }
 
 build_libuv() {
     echo "=== Building libuv-${LIBUV_VERSION} (${TARGET})..."
-    curl -fSsLo- "https://dist.libuv.org/dist/v${LIBUV_VERSION}/libuv-v${LIBUV_VERSION}.tar.gz" | tar xz -C "${BUILD_DIR}"
+    fetch "https://dist.libuv.org/dist/v${LIBUV_VERSION}/libuv-v${LIBUV_VERSION}.tar.gz" "${LIBUV_SHA256}"
     pushd "${BUILD_DIR}/libuv-v${LIBUV_VERSION}"
         ./autogen.sh
         env CFLAGS=-fPIC ./configure --disable-shared --enable-static --prefix="${STAGE_DIR}" --host="${TARGET}"
@@ -103,9 +114,10 @@ EOF
 
 build_libwebsockets() {
     echo "=== Building libwebsockets-${LIBWEBSOCKETS_VERSION} (${TARGET})..."
-    curl -fSsLo- "https://github.com/warmcat/libwebsockets/archive/v${LIBWEBSOCKETS_VERSION}.tar.gz" | tar xz -C "${BUILD_DIR}"
+    git clone --depth 1 --branch "v${LIBWEBSOCKETS_VERSION}" https://github.com/warmcat/libwebsockets.git \
+        "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
     pushd "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
-        sed -i 's/ websockets_shared//g' cmake/libwebsockets-config.cmake.in
+        [ "$(git rev-parse HEAD)" = "${LIBWEBSOCKETS_COMMIT}" ] || { echo "libwebsockets commit mismatch"; exit 1; }
         rm -rf build && mkdir -p build && cd build
         cmake -DCMAKE_TOOLCHAIN_FILE="${BUILD_DIR}/cross-${TARGET}.cmake" \
             -DCMAKE_BUILD_TYPE=RELEASE \
@@ -122,6 +134,7 @@ build_libwebsockets() {
             -DLWS_ROLE_RAW_FILE=OFF \
             -DLWS_WITH_HTTP2=ON \
             -DLWS_WITH_HTTP_BASIC_AUTH=OFF \
+            -DLWS_WITH_HTTP_DIGEST_AUTH=OFF \
             -DLWS_WITH_HTTP_STREAM_COMPRESSION=ON \
             -DLWS_WITH_UDP=OFF \
             -DLWS_WITHOUT_CLIENT=ON \
@@ -136,6 +149,13 @@ build_libwebsockets() {
             -DLWS_WITH_SYS_STATE=OFF \
             -DLWS_WITH_SYS_SMD=OFF \
             -DLWS_WITH_SECURE_STREAMS=OFF \
+            -DLWS_WITH_MINIMAL_EXAMPLES=OFF \
+            -DLWS_WITH_LHP=OFF \
+            -DLWS_WITH_JSONRPC=OFF \
+            -DLWS_WITH_STUB=OFF \
+            -DLWS_WITH_CONMON=OFF \
+            -DLWS_WITH_WOL=OFF \
+            -DLWS_WITH_TLS_SESSIONS=OFF \
             -DLWS_CTEST_INTERNET_AVAILABLE=OFF \
             ..
         make -j"$(nproc)" install
