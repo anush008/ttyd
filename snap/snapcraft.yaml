@@ -6,7 +6,7 @@ description: |
 
 grade: stable
 confinement: classic
-base: core20
+base: core24
 compression: lzo
 
 license: MIT
@@ -22,8 +22,7 @@ apps:
 
 parts:
   ttyd:
-    source: https://github.com/tsl0922/ttyd
-    source-type: git
+    source: .
     plugin: cmake
     cmake-parameters:
       - -DCMAKE_INSTALL_PREFIX=/usr
@@ -31,17 +30,19 @@ parts:
       - LDFLAGS: "-pthread"
       
     override-pull: |
-      snapcraftctl pull
-      snapcraftctl set-version "$(git describe --tags | sed 's/^v//' | cut -d "-" -f1)"
+      craftctl default
+      craftctl set version="$(git describe --tags | sed 's/^v//' | cut -d "-" -f1)"
       
     build-packages:
       - build-essential 
-      - libjson-c-dev 
+      - libjson-c-dev
+      - libuv1-dev
       - libwebsockets-dev
       
     stage-packages:
-      - libjson-c4
-      - libwebsockets15
+      - libjson-c5
+      - libuv1t64
+      - libwebsockets19t64
       
   homeishome-launch:
     plugin: nil
