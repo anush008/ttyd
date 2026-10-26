@@ -116,10 +116,17 @@ build_libwebsockets() {
     echo "=== Building libwebsockets-${LIBWEBSOCKETS_VERSION} (${TARGET})..."
     git clone --depth 1 --branch "v${LIBWEBSOCKETS_VERSION}" https://github.com/warmcat/libwebsockets.git \
         "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
+    # static libcrypto needs the winsock and crypto system libs, or the lws OpenSSL feature checks fail
+    lws_openssl_args=()
+    if [ "${BUILD_TARGET}" = "win32" ]; then
+        lws_openssl_args=(-DLWS_OPENSSL_INCLUDE_DIRS="${STAGE_DIR}/include"
+            -DLWS_OPENSSL_LIBRARIES="${STAGE_DIR}/lib/libssl.a;${STAGE_DIR}/lib/libcrypto.a;ws2_32;crypt32")
+    fi
     pushd "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
         [ "$(git rev-parse HEAD)" = "${LIBWEBSOCKETS_COMMIT}" ] || { echo "libwebsockets commit mismatch"; exit 1; }
         rm -rf build && mkdir -p build && cd build
         cmake -DCMAKE_TOOLCHAIN_FILE="${BUILD_DIR}/cross-${TARGET}.cmake" \
+            "${lws_openssl_args[@]}" \
             -DCMAKE_BUILD_TYPE=RELEASE \
             -DCMAKE_INSTALL_PREFIX="${STAGE_DIR}" \
             -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
