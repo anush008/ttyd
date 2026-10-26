@@ -70,6 +70,8 @@ static json_object *parse_window_size(const char *buf, size_t len, uint16_t *col
 static bool check_host_origin(struct lws *wsi) {
   char buf[256];
   memset(buf, 0, sizeof(buf));
+  // browsers always send Origin on websocket handshakes, so a missing one is a non-browser client
+  if (lws_hdr_total_length(wsi, WSI_TOKEN_ORIGIN) <= 0) return !server->require_origin;
   int len = lws_hdr_copy(wsi, buf, (int)sizeof(buf), WSI_TOKEN_ORIGIN);
   if (len <= 0) return false;
 
@@ -274,9 +276,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       }
 
       if (server->check_origin && !check_host_origin(wsi)) {
-        lwsl_warn(
-            "refuse to serve WS client from different origin due to the "
-            "--check-origin option.\n");
+        lwsl_warn("refuse to serve WS client from different origin (use --no-check-origin to allow it).\n");
         return 1;
       }
       break;

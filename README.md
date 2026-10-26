@@ -67,7 +67,8 @@ OPTIONS:
     -W, --writable          Allow clients to write to the TTY (readonly by default)
     -t, --client-option     Send option to client (format: key=value), repeat to add more options
     -T, --terminal-type     Terminal type to report, default: xterm-256color
-    -O, --check-origin      Do not allow websocket connection from different origin
+    -O, --check-origin      Also reject websocket connection without Origin header (other origins are always rejected)
+        --no-check-origin   Allow websocket connection from different origin (unsafe: any website can connect)
     -m, --max-clients       Maximum clients to support (default: 0, no limit)
     -o, --once              Accept only one client and exit on disconnection
     -q, --exit-no-conn      Exit on all clients disconnection

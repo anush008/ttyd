@@ -55,6 +55,9 @@ static lws_retry_bo_t retry = {
 };
 #endif
 
+// long only options
+#define OPT_NO_CHECK_ORIGIN 0x100
+
 // command line options
 static const struct option options[] = {{"port", required_argument, NULL, 'p'},
                                         {"interface", required_argument, NULL, 'i'},
@@ -81,6 +84,7 @@ static const struct option options[] = {{"port", required_argument, NULL, 'p'},
                                         {"terminal-type", required_argument, NULL, 'T'},
                                         {"client-option", required_argument, NULL, 't'},
                                         {"check-origin", no_argument, NULL, 'O'},
+                                        {"no-check-origin", no_argument, NULL, OPT_NO_CHECK_ORIGIN},
                                         {"max-clients", required_argument, NULL, 'm'},
                                         {"once", no_argument, NULL, 'o'},
                                         {"exit-no-conn", no_argument, NULL, 'q'},
@@ -112,7 +116,8 @@ static void print_help() {
           "    -W, --writable          Allow clients to write to the TTY (readonly by default)\n"
           "    -t, --client-option     Send option to client (format: key=value), repeat to add more options\n"
           "    -T, --terminal-type     Terminal type to report, default: xterm-256color\n"
-          "    -O, --check-origin      Do not allow websocket connection from different origin\n"
+          "    -O, --check-origin      Also reject websocket connection without Origin header (other origins are always rejected)\n"
+          "        --no-check-origin   Allow websocket connection from different origin (unsafe: any website can connect)\n"
           "    -m, --max-clients       Maximum clients to support (default: 0, no limit)\n"
           "    -o, --once              Accept only one client and exit on disconnection\n"
           "    -q, --exit-no-conn      Exit on all clients disconnection\n"
@@ -174,7 +179,8 @@ static void print_config() {
     lwsl_warn("The --auth-header option is set, make sure ttyd is only reachable through the auth proxy\n");
   }
   if (server->url_arg) lwsl_warn("The --url-arg option is set, clients can pass arguments to the command\n");
-  if (server->check_origin) lwsl_notice("  check origin: true\n");
+  if (!server->check_origin) lwsl_warn("The --no-check-origin option is set, websites from any origin can connect\n");
+  if (server->require_origin) lwsl_notice("  require origin: true\n");
   if (server->max_clients > 0) lwsl_notice("  max clients: %d\n", server->max_clients);
   if (server->once) lwsl_notice("  once: true\n");
   if (server->exit_no_conn) lwsl_notice("  exit_no_conn: true\n");
@@ -192,6 +198,7 @@ static struct server *server_new(int argc, char **argv, int start) {
   memset(ts, 0, sizeof(struct server));
   ts->client_count = 0;
   ts->sig_code = SIGHUP;
+  ts->check_origin = true;
   snprintf(ts->terminal_type, sizeof(ts->terminal_type), "%s", "xterm-256color");
   get_sig_name(ts->sig_code, ts->sig_name, sizeof(ts->sig_name));
   if (start == argc) return ts;
@@ -383,6 +390,10 @@ int main(int argc, char **argv) {
         break;
       case 'O':
         server->check_origin = true;
+        server->require_origin = true;
+        break;
+      case OPT_NO_CHECK_ORIGIN:
+        server->check_origin = false;
         break;
       case 'm':
         server->max_clients = parse_int("max-clients", optarg);

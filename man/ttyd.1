@@ -91,7 +91,11 @@ Cross platform: macOS, Linux, FreeBSD/OpenBSD, OpenWrt/LEDE, Windows
 
 .PP
 -O, --check-origin
-      Do not allow websocket connection from different origin
+      Also reject websocket connection without Origin header (other origins are always rejected)
+
+.PP
+--no-check-origin
+      Allow websocket connection from different origin (unsafe: any website can connect)
 
 .PP
 -m, --max-clients

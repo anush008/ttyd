@@ -60,7 +60,10 @@ ttyd 1 "September 2016" ttyd "User Manual"
       Terminal type to report, default: xterm-256color
 
   -O, --check-origin
-      Do not allow websocket connection from different origin
+      Also reject websocket connection without Origin header (other origins are always rejected)
+
+  --no-check-origin
+      Allow websocket connection from different origin (unsafe: any website can connect)
 
   -m, --max-clients
       Maximum clients to support (default: 0, no limit)

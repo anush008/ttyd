@@ -79,7 +79,8 @@ struct server {
   bool ssl;                // whether TLS is enabled
   bool url_arg;            // allow client to send cli arguments in URL
   bool writable;           // whether clients to write to the TTY
-  bool check_origin;       // whether allow websocket connection from different origin
+  bool check_origin;       // whether reject websocket connection from different origin
+  bool require_origin;     // whether reject websocket connection without Origin header
   int max_clients;         // maximum clients to support
   bool once;               // whether accept only one client and exit on disconnection
   bool exit_no_conn;       // whether exit on all clients disconnection
