@@ -142,6 +142,14 @@ export class ZmodemAddon implements ITerminalAddon {
         const { session, writeProgress } = this;
 
         session.on('offer', offer => {
+            // terminal output can start a transfer (eg: cat of a file), so ask the user before saving anything
+            const { name, size } = offer.get_details();
+            if (
+                !window.confirm(`Save file "${this.safeName(name)}" (${this.bytesHuman(size, 2)}) from the terminal?`)
+            ) {
+                offer.skip();
+                return;
+            }
             offer.on('input', () => writeProgress(offer));
             offer
                 .accept()
@@ -159,12 +167,20 @@ export class ZmodemAddon implements ITerminalAddon {
     private writeProgress(offer: Zmodem.Offer) {
         const { bytesHuman } = this;
         const file = offer.get_details();
-        const name = file.name;
+        const name = this.safeName(file.name);
         const size = file.size;
         const offset = offer.get_offset();
         const percent = ((100 * offset) / size).toFixed(2);
 
         this.options.writer(`${name} ${percent}% ${bytesHuman(offset, 2)}/${bytesHuman(size, 2)}\r`);
+    }
+
+    // strip control characters, so a file name can not inject terminal escape sequences
+    private safeName(name: string): string {
+        return Array.from(String(name), c => {
+            const code = c.charCodeAt(0);
+            return code < 0x20 || (code >= 0x7f && code <= 0x9f) ? '?' : c;
+        }).join('');
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,7 +1,7 @@
 import { bind } from 'decko';
 import type { IDisposable, ITerminalOptions } from '@xterm/xterm';
 import { Terminal } from '@xterm/xterm';
-import { ClipboardAddon } from '@xterm/addon-clipboard';
+import { ClipboardAddon, ClipboardSelectionType, IClipboardProvider } from '@xterm/addon-clipboard';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -66,6 +66,34 @@ export interface XtermOptions {
     termOptions: ITerminalOptions;
 }
 
+// OSC 52: allow programs to set the clipboard, but never let terminal output read it
+const writeOnlyClipboard: IClipboardProvider = {
+    readText: () => '',
+    writeText: async (selection: ClipboardSelectionType, text: string) => {
+        if (selection === ClipboardSelectionType.SYSTEM) await navigator.clipboard.writeText(text);
+    },
+};
+
+// options that may be set from the URL query string, other options are set by the server only
+const urlOptions: { [key: string]: 'boolean' | 'number' | 'string' } = {
+    fontSize: 'number',
+    lineHeight: 'number',
+    letterSpacing: 'number',
+    cursorBlink: 'boolean',
+    cursorStyle: 'string',
+    rendererType: 'string',
+    unicodeVersion: 'string',
+    titleFixed: 'string',
+    disableLeaveAlert: 'boolean',
+    disableResizeOverlay: 'boolean',
+    disableReconnect: 'boolean',
+};
+const urlOptionValues: { [key: string]: string[] } = {
+    cursorStyle: ['block', 'underline', 'bar'],
+    rendererType: ['dom', 'webgl'],
+    unicodeVersion: ['6', '11'],
+};
+
 function toDisposable(f: () => void): IDisposable {
     return { dispose: f };
 }
@@ -85,7 +113,7 @@ export class Xterm {
     private terminal: Terminal;
     private fitAddon = new FitAddon();
     private overlayAddon = new OverlayAddon();
-    private clipboardAddon = new ClipboardAddon();
+    private clipboardAddon = new ClipboardAddon(undefined, writeOnlyClipboard);
     private webLinksAddon = new WebLinksAddon();
     private webglAddon?: WebglAddon;
     private zmodemAddon?: ZmodemAddon;
@@ -305,30 +333,29 @@ export class Xterm {
 
     @bind
     private parseOptsFromUrlQuery(query: string): Preferences {
-        const { terminal } = this;
-        const { clientOptions } = this.options;
         const prefs = {} as Preferences;
         const queryObj = Array.from(new URLSearchParams(query) as unknown as Iterable<[string, string]>);
 
         for (const [k, queryVal] of queryObj) {
-            let v = clientOptions[k];
-            if (v === undefined) v = terminal.options[k];
-            switch (typeof v) {
+            if (!Object.prototype.hasOwnProperty.call(urlOptions, k)) {
+                if (k !== 'arg') console.warn(`[ttyd] ignored url option: ${k}`);
+                continue;
+            }
+            const allowed = urlOptionValues[k];
+            if (allowed && !allowed.includes(queryVal)) {
+                console.warn(`[ttyd] ignored url option: ${k}=${queryVal}`);
+                continue;
+            }
+            switch (urlOptions[k]) {
                 case 'boolean':
                     prefs[k] = queryVal === 'true' || queryVal === '1';
                     break;
-                case 'number':
-                case 'bigint':
-                    prefs[k] = Number.parseInt(queryVal, 10);
+                case 'number': {
+                    const v = Number.parseFloat(queryVal);
+                    if (Number.isFinite(v) && v > 0 && v <= 100) prefs[k] = v;
                     break;
+                }
                 case 'string':
-                    prefs[k] = queryVal;
-                    break;
-                case 'object':
-                    prefs[k] = JSON.parse(queryVal);
-                    break;
-                default:
-                    console.warn(`[ttyd] maybe unknown option: ${k}=${queryVal}, treating as string`);
                     prefs[k] = queryVal;
                     break;
             }
