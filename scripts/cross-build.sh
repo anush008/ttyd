@@ -120,7 +120,7 @@ build_libwebsockets() {
     lws_openssl_args=()
     if [ "${BUILD_TARGET}" = "win32" ]; then
         lws_openssl_args=(-DLWS_OPENSSL_INCLUDE_DIRS="${STAGE_DIR}/include"
-            -DLWS_OPENSSL_LIBRARIES:STRING="${STAGE_DIR}/lib/libssl.a;${STAGE_DIR}/lib/libcrypto.a;ws2_32;crypt32")
+            -DLWS_OPENSSL_LIBRARIES:STRING="${STAGE_DIR}/lib/libssl.a;${STAGE_DIR}/lib/libcrypto.a;ws2_32;crypt32;bcrypt;advapi32;user32")
     fi
     pushd "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
         [ "$(git rev-parse HEAD)" = "${LIBWEBSOCKETS_COMMIT}" ] || { echo "libwebsockets commit mismatch"; exit 1; }
