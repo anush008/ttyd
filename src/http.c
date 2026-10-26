@@ -251,7 +251,8 @@ int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
       break;
 #if (defined(LWS_OPENSSL_SUPPORT) || defined(LWS_WITH_TLS)) && !defined(LWS_WITH_MBEDTLS)
     case LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION:
-      if (!len || (SSL_get_verify_result((SSL *)in) != X509_V_OK)) {
+      // len is preverify_ok, the result of the chain check is only in the store context during verification
+      if (!len || X509_STORE_CTX_get_error((X509_STORE_CTX *)user) != X509_V_OK) {
         int err = X509_STORE_CTX_get_error((X509_STORE_CTX *)user);
         int depth = X509_STORE_CTX_get_error_depth((X509_STORE_CTX *)user);
         const char *msg = X509_verify_cert_error_string(err);
