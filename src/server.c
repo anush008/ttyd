@@ -347,12 +347,15 @@ int main(int argc, char **argv) {
   info.protocols = protocols;
   info.gid = -1;
   info.uid = -1;
-  info.max_http_header_pool = 16;
+  // enough header slots that slow clients can not hold all of them, with a short timeout to free them
+  info.max_http_header_pool = 256;
+  info.timeout_secs = 10;
+  info.timeout_secs_ah_idle = 5;
   info.options = LWS_SERVER_OPTION_LIBUV | LWS_SERVER_OPTION_VALIDATE_UTF8 | LWS_SERVER_OPTION_DISABLE_IPV6;
 #ifndef LWS_WITHOUT_EXTENSIONS
   info.extensions = extensions;
 #endif
-  info.max_http_header_data = 65535;
+  info.max_http_header_data = 16384;
 
   int debug_level = LLL_ERR | LLL_WARN | LLL_NOTICE;
   char iface[128] = "";
