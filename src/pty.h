@@ -47,6 +47,7 @@ struct pty_process_ {
   uv_pipe_t *in;
   uv_pipe_t *out;
   bool paused;
+  volatile bool exited;  // set by the wait thread once the process was reaped
 
   pty_read_cb read_cb;
   pty_exit_cb exit_cb;

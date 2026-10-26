@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -65,8 +66,15 @@ void pty_buf_free(pty_buf_t *buf) {
 static void read_cb(uv_stream_t *stream, ssize_t n, const uv_buf_t *buf) {
   uv_read_stop(stream);
   pty_process *process = (pty_process *) stream->data;
+  process->paused = true;
   if (n <= 0) {
-    if (n == UV_ENOBUFS || n == 0) return;
+    if (n == UV_ENOBUFS || n == 0) {
+      // nothing read, keep reading
+      free(buf->base);
+      process->paused = false;
+      uv_read_start(stream, alloc_cb, read_cb);
+      return;
+    }
     process->read_cb(process, NULL, true);
     goto done;
   }
@@ -92,11 +100,14 @@ pty_process *process_init(void *ctx, uv_loop_t *loop, char *argv[], char *envp[]
   process->columns = 80;
   process->rows = 24;
   process->exit_code = -1;
+#ifndef _WIN32
+  process->pty = -1;
+#endif
   return process;
 }
 
 bool process_running(pty_process *process) {
-  return process != NULL && process->pid > 0 && uv_kill(process->pid, 0) == 0;
+  return process != NULL && process->pid > 0 && !process->exited && uv_kill(process->pid, 0) == 0;
 }
 
 void process_free(pty_process *process) {
@@ -109,8 +120,9 @@ void process_free(pty_process *process) {
   if (process->pty != NULL) pClosePseudoConsole(process->pty);
   if (process->handle != NULL) CloseHandle(process->handle);
 #else
-  close(process->pty);
-  uv_thread_join(&process->tid);
+  // pid is only set when the process was spawned and the wait thread was created
+  if (process->pty >= 0) close(process->pty);
+  if (process->pid > 0) uv_thread_join(&process->tid);
 #endif
   if (process->in != NULL) uv_close((uv_handle_t *) process->in, close_cb);
   if (process->out != NULL) uv_close((uv_handle_t *) process->out, close_cb);
@@ -125,13 +137,14 @@ void pty_pause(pty_process *process) {
   if (process == NULL) return;
   if (process->paused) return;
   uv_read_stop((uv_stream_t *) process->out);
+  process->paused = true;
 }
 
 void pty_resume(pty_process *process) {
   if (process == NULL) return;
   if (!process->paused) return;
   process->out->data = process;
-  uv_read_start((uv_stream_t *) process->out, alloc_cb, read_cb);
+  if (uv_read_start((uv_stream_t *) process->out, alloc_cb, read_cb) == 0) process->paused = false;
 }
 
 int pty_write(pty_process *process, pty_buf_t *buf) {
@@ -142,7 +155,12 @@ int pty_write(pty_process *process, pty_buf_t *buf) {
   uv_buf_t b = uv_buf_init(buf->base, buf->len);
   uv_write_t *req = xmalloc(sizeof(uv_write_t));
   req->data = buf;
-  return uv_write(req, (uv_stream_t *) process->in, &b, 1, write_cb);
+  int err = uv_write(req, (uv_stream_t *) process->in, &b, 1, write_cb);
+  if (err) {
+    pty_buf_free(buf);
+    free(req);
+  }
+  return err;
 }
 
 bool pty_resize(pty_process *process) {
@@ -158,7 +176,7 @@ bool pty_resize(pty_process *process) {
 }
 
 bool pty_kill(pty_process *process, int sig) {
-  if (process == NULL) return false;
+  if (process == NULL || process->exited) return false;
 #ifdef _WIN32
   return TerminateProcess(process->handle, 1) != 0;
 #else
@@ -233,9 +251,15 @@ static bool conpty_setup(HPCON *hnd, COORD size, STARTUPINFOEXW *si_ex, char **i
 
   sa.nLength = sizeof(sa);
 
-  snprintf(buf, sizeof(buf), "\\\\.\\pipe\\ttyd-term-in-%d-%d", pid, count);
+  // unpredictable pipe names, so other local users can not connect to them first
+  unsigned char rand[16];
+  char rand_hex[sizeof(rand) * 2 + 1];
+  if (uv_random(NULL, NULL, rand, sizeof(rand), 0, NULL) != 0) return false;
+  for (size_t i = 0; i < sizeof(rand); i++) snprintf(rand_hex + i * 2, 3, "%02x", rand[i]);
+
+  snprintf(buf, sizeof(buf), "\\\\.\\pipe\\ttyd-term-in-%d-%d-%s", pid, count, rand_hex);
   *in_name = strdup(buf);
-  snprintf(buf, sizeof(buf), "\\\\.\\pipe\\ttyd-term-out-%d-%d", pid, count);
+  snprintf(buf, sizeof(buf), "\\\\.\\pipe\\ttyd-term-out-%d-%d-%s", pid, count, rand_hex);
   *out_name = strdup(buf);
   in_pipe = CreateNamedPipeA(*in_name, open_mode, pipe_mode, 1, 0, 0, 30000, &sa);
   out_pipe = CreateNamedPipeA(*out_name, open_mode, pipe_mode, 1, 0, 0, 30000, &sa);
@@ -400,10 +424,12 @@ static void wait_cb(void *arg) {
   pty_process *process = (pty_process *) arg;
 
   pid_t pid;
-  int stat;
+  int stat = 0;
   do
     pid = waitpid(process->pid, &stat, 0);
-  while (pid != process->pid && errno == EINTR);
+  while (pid < 0 && errno == EINTR);
+  // the pid may be reused from now on, never signal it again
+  process->exited = true;
 
   if (WIFEXITED(stat)) {
     process->exit_code = WEXITSTATUS(stat);
@@ -438,7 +464,12 @@ int pty_spawn(pty_process *process, pty_read_cb read_cb, pty_exit_cb exit_cb) {
     return status;
   } else if (pid == 0) {
     setsid();
-    if (process->cwd != NULL) chdir(process->cwd);
+    // libuv ignores SIGPIPE, and ignored signals are inherited across exec
+    signal(SIGPIPE, SIG_DFL);
+    if (process->cwd != NULL && chdir(process->cwd) != 0) {
+      perror("chdir failed");
+      _exit(1);
+    }
     if (process->envp != NULL) {
       char **p = process->envp;
       for (; *p; p++) putenv(*p);
