@@ -156,6 +156,8 @@ build_libwebsockets() {
             -DLWS_WITH_CONMON=OFF \
             -DLWS_WITH_WOL=OFF \
             -DLWS_WITH_TLS_SESSIONS=OFF \
+            -DLWS_WITH_GENCRYPTO=ON \
+            -DDISABLE_WERROR=ON \
             -DLWS_CTEST_INTERNET_AVAILABLE=OFF \
             ..
         make -j"$(nproc)" install
