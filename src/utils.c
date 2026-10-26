@@ -66,6 +66,15 @@ bool endswith(const char *str, const char *suffix) {
   return str_len > suffix_len && !strcmp(str + (str_len - suffix_len), suffix);
 }
 
+bool secure_strequal(const char *a, const char *b) {
+  if (a == NULL || b == NULL) return false;
+  size_t a_len = strlen(a);
+  size_t b_len = strlen(b);
+  volatile unsigned char diff = a_len != b_len;
+  for (size_t i = 0; i < a_len; i++) diff |= (unsigned char)a[i] ^ (unsigned char)b[b_len ? i % b_len : 0];
+  return diff == 0;
+}
+
 int get_sig_name(int sig, char *buf, size_t len) {
   int n = snprintf(buf, len, "SIG%s", sig < NSIG ? sys_signame[sig] : "unknown");
   uppercase(buf);
@@ -73,10 +82,11 @@ int get_sig_name(int sig, char *buf, size_t len) {
 }
 
 int get_sig(const char *sig_name) {
+  // accept both "HUP" and "SIGHUP"
+  const char *short_name = strncasecmp(sig_name, "SIG", 3) == 0 ? sig_name + 3 : sig_name;
   for (int sig = 1; sig < NSIG; sig++) {
     const char *name = sys_signame[sig];
-    if (name != NULL && (strcasecmp(name, sig_name) == 0 || strcasecmp(name, sig_name + 3) == 0))
-      return sig;
+    if (name != NULL && strcasecmp(name, short_name) == 0) return sig;
   }
   return atoi(sig_name);
 }

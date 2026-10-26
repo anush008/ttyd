@@ -22,6 +22,9 @@ char *lowercase(char *s);
 // Check whether str ends with suffix
 bool endswith(const char *str, const char *suffix);
 
+// Compare two strings in time that depends only on their lengths
+bool secure_strequal(const char *a, const char *b);
+
 // Get human readable signal string
 int get_sig_name(int sig, char *buf, size_t len);
 
