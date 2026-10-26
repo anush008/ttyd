@@ -57,7 +57,7 @@ OPTIONS:
     -p, --port              Port to listen (default: 7681, use `0` for random port)
     -i, --interface         Network interface to bind (eg: eth0), or UNIX domain socket path (eg: /var/run/ttyd.sock)
     -U, --socket-owner      User owner of the UNIX domain socket file, when enabled (eg: user:group)
-    -c, --credential        Credential for basic authentication (format: username:password)
+    -c, --credential        Credential for basic authentication (format: username:password), or set TTYD_CREDENTIAL
     -H, --auth-header       HTTP Header name for auth proxy, this will configure ttyd to let a HTTP reverse proxy handle authentication
     -u, --uid               User id to run with
     -g, --gid               Group id to run with

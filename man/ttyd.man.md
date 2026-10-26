@@ -30,7 +30,7 @@ ttyd 1 "September 2016" ttyd "User Manual"
       User owner of the UNIX domain socket file, when enabled (eg: user:group)
 
   -c, --credential USER[:PASSWORD]
-      Credential for Basic Authentication (format: username:password)
+      Credential for Basic Authentication (format: username:password). The TTYD_CREDENTIAL environment variable is used when this option is not set, and it keeps the credential out of the process list
 
   -H, --auth-header <name>
       HTTP Header name for auth proxy, this will configure ttyd to let a HTTP reverse proxy handle authentication
