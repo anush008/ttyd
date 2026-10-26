@@ -116,10 +116,11 @@ build_libwebsockets() {
     echo "=== Building libwebsockets-${LIBWEBSOCKETS_VERSION} (${TARGET})..."
     git clone --depth 1 --branch "v${LIBWEBSOCKETS_VERSION}" https://github.com/warmcat/libwebsockets.git \
         "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
-    # static libcrypto needs the winsock and crypto system libs, or the lws OpenSSL feature checks fail
+    # static libcrypto needs the winsock and crypto system libs, or the lws OpenSSL feature checks fail.
+    # lws uses pthreads on mingw without including pthread.h, use the native windows code instead
     lws_openssl_args=()
     if [ "${BUILD_TARGET}" = "win32" ]; then
-        lws_openssl_args=(-DLWS_OPENSSL_INCLUDE_DIRS="${STAGE_DIR}/include"
+        lws_openssl_args=(-DLWS_HAVE_PTHREAD_H:BOOL=OFF -DLWS_OPENSSL_INCLUDE_DIRS="${STAGE_DIR}/include"
             -DLWS_OPENSSL_LIBRARIES:STRING="${STAGE_DIR}/lib/libssl.a;${STAGE_DIR}/lib/libcrypto.a;ws2_32;crypt32;bcrypt;advapi32;user32")
     fi
     pushd "${BUILD_DIR}/libwebsockets-${LIBWEBSOCKETS_VERSION}"
