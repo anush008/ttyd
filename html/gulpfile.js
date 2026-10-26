@@ -1,9 +1,9 @@
-const { src, dest, task, series } = require('gulp');
-const clean = require('gulp-clean');
-const gzip = require('gulp-gzip');
-const inlineSource = require('gulp-inline-source');
-const rename = require('gulp-rename');
-const { objectTransform } = require('through2');
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
+const { task, series } = require('gulp');
+
+const dist = path.join(__dirname, 'dist');
 
 const genHeader = (size, buf, len) => {
     let idx = 0;
@@ -30,39 +30,43 @@ const genHeader = (size, buf, len) => {
     data += `unsigned int index_html_size = ${size};\n`;
     return data;
 };
-let fileSize = 0;
+// replace the `inline` marked tags of dist/index.html with the content of the files they reference
+const inlineHtml = html => {
+    const read = file => fs.readFileSync(path.join(dist, path.basename(file)));
+    return html
+        .replace(/<link inline ([^>]*?)href="([^"]+)"([^>]*)>/g, (tag, before, file, after) => {
+            if (/rel="stylesheet"/.test(before + after)) {
+                return `<style type="text/css">${read(file).toString()}</style>`;
+            }
+            const type = (/type="([^"]+)"/.exec(before + after) || [])[1] || 'application/octet-stream';
+            return `<link ${before}href="data:${type};base64,${read(file).toString('base64')}"${after}>`;
+        })
+        .replace(/<script inline ([^>]*?)src="([^"]+)"([^>]*)><\/script>/g, (tag, before, file, after) => {
+            const js = read(file)
+                .toString()
+                .replace(/\n\/\/# sourceMappingURL=.*$/, '')
+                .replace(/<\/script/gi, '<\\/script');
+            return `<script ${before.trim()}${after}>${js}</script>`;
+        });
+};
 
-task('clean', () => {
-    return src('dist', { read: false, allowEmpty: true }).pipe(clean());
+task('clean', done => {
+    fs.rmSync(dist, { recursive: true, force: true });
+    done();
 });
 
-task('inline', () => {
-    const options = {
-        compress: false,
-    };
-
-    return src('dist/index.html').pipe(inlineSource(options)).pipe(rename('inline.html')).pipe(dest('dist/'));
+task('inline', done => {
+    const html = fs.readFileSync(path.join(dist, 'index.html')).toString();
+    fs.writeFileSync(path.join(dist, 'inline.html'), inlineHtml(html));
+    done();
 });
 
 task(
     'default',
-    series('inline', () => {
-        return src('dist/inline.html')
-            .pipe(
-                objectTransform((file, enc, cb) => {
-                    fileSize = file.contents.length;
-                    return cb(null, file);
-                }),
-            )
-            .pipe(gzip())
-            .pipe(
-                objectTransform((file, enc, cb) => {
-                    const buf = file.contents;
-                    file.contents = Buffer.from(genHeader(fileSize, buf, buf.length));
-                    return cb(null, file);
-                }),
-            )
-            .pipe(rename('html.h'))
-            .pipe(dest('../src/'));
+    series('inline', done => {
+        const html = fs.readFileSync(path.join(dist, 'inline.html'));
+        const gz = zlib.gzipSync(html, { level: zlib.constants.Z_BEST_COMPRESSION });
+        fs.writeFileSync(path.join(__dirname, '../src/html.h'), genHeader(html.length, gz, gz.length));
+        done();
     }),
 );

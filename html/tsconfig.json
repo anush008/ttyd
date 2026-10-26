@@ -1,6 +1,16 @@
 {
-  "extends": "./node_modules/gts/tsconfig-google.json",
   "compilerOptions": {
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmitOnError": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "pretty": true,
+    "sourceMap": true,
+    "stripInternal": true,
+    "strict": true,
+    "target": "ES2022",
     "module": "esnext",
     "moduleResolution": "bundler",
     "esModuleInterop": true,
@@ -8,15 +18,15 @@
     "jsxFactory": "h",
     "allowJs": true,
     "noImplicitAny": false,
-    "composite": false,
     "declaration": false,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
     "noUncheckedSideEffectImports": false,
-    "lib": ["es2019", "dom"],
+    "lib": ["es2019", "dom"]
   },
   "include": [
     "src/**/*.tsx",
     "src/**/*.ts"
-  ]
+  ],
+  "exclude": ["node_modules"]
 }
