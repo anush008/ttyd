@@ -81,7 +81,7 @@ build_openssl() {
             s390x) openssl_cflags="${openssl_cflags} -march=z10" ;;
         esac
         env CC=gcc CROSS_COMPILE="${TARGET}-" CFLAGS="${openssl_cflags}" \
-            ./Configure "${openssl_target}" no-err -DOPENSSL_SMALL_FOOTPRINT --prefix="${STAGE_DIR}" \
+            ./Configure "${openssl_target}" no-err -DOPENSSL_SMALL_FOOTPRINT --prefix="${STAGE_DIR}" --libdir=lib \
         && make -j"$(nproc)" all > /dev/null && make install_sw
     popd
 }
@@ -171,7 +171,7 @@ build_ttyd() {
         -DCMAKE_INSTALL_PREFIX="${STAGE_DIR}" \
         -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
         -DCMAKE_C_FLAGS="-Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -flto" \
-        -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie -Wl,-s -Wl,-Bsymbolic -Wl,--gc-sections" \
+        -DCMAKE_EXE_LINKER_FLAGS="-static -no-pie -Wl,-s -Wl,-Bsymbolic -Wl,--gc-sections -L${STAGE_DIR}/lib" \
         -DCMAKE_BUILD_TYPE=RELEASE \
         ..
     make install
