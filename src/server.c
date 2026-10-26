@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <pwd.h>
+#include <unistd.h>
+#endif
 
 #include "utils.h"
 #include "compat.h"
@@ -114,7 +118,7 @@ static void print_help() {
           "    -q, --exit-no-conn      Exit on all clients disconnection\n"
           "    -B, --browser           Open terminal with the default system browser\n"
           "    -I, --index             Custom index.html path\n"
-          "    -b, --base-path         Expected base path for requests coming from a reverse proxy (eg: /mounted/here, max length: 128)\n"
+          "    -b, --base-path         Expected base path for requests coming from a reverse proxy (eg: /mounted/here, max length: 121)\n"
 #if LWS_LIBRARY_VERSION_NUMBER >= 4000000
           "    -P, --ping-interval     Websocket ping interval(sec) (default: 5)\n"
 #endif
@@ -137,9 +141,24 @@ static void print_help() {
   // clang-format on
 }
 
+static bool set_credential(const char *credential) {
+  if (strchr(credential, ':') == NULL) {
+    fprintf(stderr, "ttyd: invalid credential, format: username:password\n");
+    return false;
+  }
+  char b64_text[256];
+  if (lws_b64_encode_string(credential, (int)strlen(credential), b64_text, sizeof(b64_text)) <= 0) {
+    fprintf(stderr, "ttyd: invalid credential, too long (max: 189 characters)\n");
+    return false;
+  }
+  free(server->credential);
+  server->credential = strdup(b64_text);
+  return true;
+}
+
 static void print_config() {
   lwsl_notice("tty configuration:\n");
-  if (server->credential != NULL) lwsl_notice("  credential: %s\n", server->credential);
+  if (server->credential != NULL) lwsl_notice("  credential: (set)\n");
   lwsl_notice("  start command: %s\n", server->command);
   lwsl_notice("  close signal: %s (%d)\n", server->sig_name, server->sig_code);
   lwsl_notice("  terminal type: %s\n", server->terminal_type);
@@ -150,9 +169,12 @@ static void print_config() {
     lwsl_notice("  token    : %s\n", endpoints.token);
     lwsl_notice("  websocket: %s\n", endpoints.ws);
   }
-  if (server->auth_header != NULL) lwsl_notice("  auth header: %s\n", server->auth_header);
+  if (server->auth_header != NULL) {
+    lwsl_notice("  auth header: %s\n", server->auth_header);
+    lwsl_warn("The --auth-header option is set, make sure ttyd is only reachable through the auth proxy\n");
+  }
+  if (server->url_arg) lwsl_warn("The --url-arg option is set, clients can pass arguments to the command\n");
   if (server->check_origin) lwsl_notice("  check origin: true\n");
-  if (server->url_arg) lwsl_notice("  allow url arg: true\n");
   if (server->max_clients > 0) lwsl_notice("  max clients: %d\n", server->max_clients);
   if (server->once) lwsl_notice("  once: true\n");
   if (server->exit_no_conn) lwsl_notice("  exit_no_conn: true\n");
@@ -207,6 +229,7 @@ static struct server *server_new(int argc, char **argv, int start) {
 static void server_free(struct server *ts) {
   if (ts == NULL) return;
   if (ts->credential != NULL) free(ts->credential);
+  free(ts->token);
   if (ts->auth_header != NULL) free(ts->auth_header);
   if (ts->index != NULL) free(ts->index);
   if (ts->cwd != NULL) free(ts->cwd);
@@ -272,21 +295,15 @@ static int calc_command_start(int argc, char **argv) {
     argv_copy[i] = strdup(argv[i]);
   }
 
-  // do not print error message for invalid option
+  // do not print error message for invalid option, stop at the first non-option argument (the command)
+  char *opt_string_copy = xmalloc(strlen(opt_string) + 2);
+  snprintf(opt_string_copy, strlen(opt_string) + 2, "+%s", opt_string);
   opterr = 0;
-  while (getopt_long(argc_copy, argv_copy, opt_string, options, NULL) != -1)
+  while (getopt_long(argc_copy, argv_copy, opt_string_copy, options, NULL) != -1)
     ;
+  free(opt_string_copy);
 
-  int start = argc;
-  if (optind < argc) {
-    char *command = argv_copy[optind];
-    for (int i = 0; i < argc; i++) {
-      if (strcmp(argv[i], command) == 0) {
-        start = i;
-        break;
-      }
-    }
-  }
+  int start = optind < argc ? optind : argc;
 
   // free argv copy
   for (int i = 0; i < argc; i++) {
@@ -395,13 +412,7 @@ int main(int argc, char **argv) {
         socket_owner[sizeof(socket_owner) - 1] = '\0';
         break;
       case 'c':
-        if (strchr(optarg, ':') == NULL) {
-          fprintf(stderr, "ttyd: invalid credential, format: username:password\n");
-          return -1;
-        }
-        char b64_text[256];
-        lws_b64_encode_string(optarg, strlen(optarg), b64_text, sizeof(b64_text));
-        server->credential = strdup(b64_text);
+        if (!set_credential(optarg)) return -1;
         break;
       case 'H':
         server->auth_header = strdup(optarg);
@@ -449,14 +460,18 @@ int main(int argc, char **argv) {
         }
         break;
       case 'b': {
+        // the longest endpoint is "/token", and the request path buffer is 128 bytes
         char path[128];
-        strncpy(path, optarg, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
-        size_t len = strlen(path);
-        while (len && path[len - 1] == '/') path[--len] = 0;  // trim trailing /
+        size_t len = strlen(optarg);
+        while (len && optarg[len - 1] == '/') len--;  // trim trailing /
         if (!len) break;
-#define sc(f)                                  \
-  strncpy(path + len, endpoints.f, 128 - len); \
+        if (optarg[0] != '/' || len + strlen(endpoints.token) >= sizeof(path)) {
+          fprintf(stderr, "ttyd: invalid base path: %s, it must start with '/' (max length: %zu)\n", optarg,
+                  sizeof(path) - 1 - strlen(endpoints.token));
+          return -1;
+        }
+#define sc(f)                                                      \
+  snprintf(path, sizeof(path), "%.*s%s", (int)len, optarg, endpoints.f); \
   endpoints.f = strdup(path);
         sc(ws) sc(index) sc(token) sc(parent)
 #undef sc
@@ -506,24 +521,16 @@ int main(int argc, char **argv) {
         break;
       case '?':
         break;
-      case 't':
-        optind--;
-        for (; optind < start && *argv[optind] != '-'; optind++) {
-          char *option = optarg;
-          char *key = strsep(&option, "=");
-          if (key == NULL) {
-            fprintf(stderr, "ttyd: invalid client option: %s, format: key=value\n", optarg);
-            return -1;
-          }
-          char *value = strsep(&option, "=");
-          if (value == NULL) {
-            fprintf(stderr, "ttyd: invalid client option: %s, format: key=value\n", optarg);
-            return -1;
-          }
-          struct json_object *obj = json_tokener_parse(value);
-          json_object_object_add(client_prefs, key, obj != NULL ? obj : json_object_new_string(value));
+      case 't': {
+        char *value = strchr(optarg, '=');
+        if (value == NULL || value == optarg) {
+          fprintf(stderr, "ttyd: invalid client option: %s, format: key=value\n", optarg);
+          return -1;
         }
-        break;
+        *value++ = '\0';
+        struct json_object *obj = json_tokener_parse(value);
+        json_object_object_add(client_prefs, optarg, obj != NULL ? obj : json_object_new_string(value));
+      } break;
       default:
         print_help();
         return -1;
@@ -537,11 +544,31 @@ int main(int argc, char **argv) {
     return -1;
   }
 
+  // read the credential from the environment, so it does not show up in the process list
+  const char *env_credential = getenv("TTYD_CREDENTIAL");
+  if (server->credential == NULL && env_credential != NULL && !set_credential(env_credential)) return -1;
+#ifdef _WIN32
+  _putenv_s("TTYD_CREDENTIAL", "");
+#else
+  unsetenv("TTYD_CREDENTIAL");
+#endif
+
+#ifndef _WIN32
+  // use the primary group of the user if only -u is given, otherwise the group is not changed at all
+  if (info.uid != (uid_t)-1 && info.gid == (gid_t)-1) {
+    struct passwd *pw = getpwuid((uid_t)info.uid);
+    if (pw == NULL) {
+      fprintf(stderr, "ttyd: can not find primary group of uid %d, use the --gid option\n", (int)info.uid);
+      return -1;
+    }
+    info.gid = pw->pw_gid;
+  }
+#endif
+
   lws_set_log_level(debug_level, NULL);
 
-  char server_hdr[128] = "";
-  snprintf(server_hdr, sizeof(server_hdr), "ttyd/%s (libwebsockets/%s)", TTYD_VERSION, LWS_LIBRARY_VERSION);
-  info.server_string = server_hdr;
+  // do not disclose versions in the Server header
+  info.server_string = "ttyd";
 
 #if LWS_LIBRARY_VERSION_NUMBER < 4000000
   info.ws_ping_pong_interval = 5;
@@ -578,6 +605,7 @@ int main(int argc, char **argv) {
       info.options |= LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT;
     }
     info.options |= LWS_SERVER_OPTION_ALLOW_NON_SSL_ON_SSL_PORT | LWS_SERVER_OPTION_REDIRECT_HTTP_TO_HTTPS;
+    server->ssl = true;
   }
 #endif
 
@@ -610,6 +638,34 @@ int main(int argc, char **argv) {
   }
   int port = lws_get_vhost_listen_port(vhost);
   lwsl_notice(" Listening on port: %d\n", port);
+
+  // drop privileges now (lws otherwise does it later in the event loop), and make sure it worked
+#if LWS_LIBRARY_VERSION_MAJOR >= 5
+  if (lws_finalize_startup(context, "ttyd")) {
+#else
+  if (lws_finalize_startup(context)) {
+#endif
+    lwsl_err("failed to drop privileges\n");
+    return 1;
+  }
+#ifndef _WIN32
+  if ((info.gid != (gid_t)-1 && (getgid() != (gid_t)info.gid || getegid() != (gid_t)info.gid)) ||
+      (info.uid != (uid_t)-1 && (getuid() != (uid_t)info.uid || geteuid() != (uid_t)info.uid))) {
+    lwsl_err("failed to drop privileges to uid %d, gid %d\n", (int)info.uid, (int)info.gid);
+    return 1;
+  }
+#endif
+
+  // random token for the websocket authentication, so /token never returns the password
+  if (server->credential != NULL) {
+    unsigned char rand[32];
+    if (lws_get_random(context, rand, sizeof(rand)) != sizeof(rand)) {
+      lwsl_err("failed to generate random token\n");
+      return 1;
+    }
+    server->token = xmalloc(sizeof(rand) * 2 + 1);
+    for (size_t i = 0; i < sizeof(rand); i++) snprintf(server->token + i * 2, 3, "%02x", rand[i]);
+  }
 
   if (browser) {
     char url[30];

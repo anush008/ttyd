@@ -73,7 +73,7 @@ OPTIONS:
     -q, --exit-no-conn      Exit on all clients disconnection
     -B, --browser           Open terminal with the default system browser
     -I, --index             Custom index.html path
-    -b, --base-path         Expected base path for requests coming from a reverse proxy (eg: /mounted/here, max length: 128)
+    -b, --base-path         Expected base path for requests coming from a reverse proxy (eg: /mounted/here, max length: 121)
     -P, --ping-interval     Websocket ping interval(sec) (default: 5)
     -6, --ipv6              Enable IPv6 support
     -S, --ssl               Enable SSL

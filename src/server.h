@@ -40,6 +40,8 @@ struct pss_tty {
   bool initialized;
   int initial_cmd_index;
   bool authenticated;
+  bool closing;
+  bool paused;  // client asked to pause the output
   char user[30];
   char address[50];
   char path[128];
@@ -65,6 +67,7 @@ struct server {
   int client_count;        // client count
   char *prefs_json;        // client preferences
   char *credential;        // encoded basic auth credential
+  char *token;             // random token for websocket auth, set when credential is set
   char *auth_header;       // header name used for auth proxy
   char *index;             // custom index.html
   char *command;           // full command line
@@ -73,6 +76,7 @@ struct server {
   char *cwd;               // working directory
   int sig_code;            // close signal
   char sig_name[20];       // human readable signal string
+  bool ssl;                // whether TLS is enabled
   bool url_arg;            // allow client to send cli arguments in URL
   bool writable;           // whether clients to write to the TTY
   bool check_origin;       // whether allow websocket connection from different origin
