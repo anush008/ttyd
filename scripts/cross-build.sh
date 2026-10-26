@@ -157,6 +157,7 @@ build_libwebsockets() {
             -DLWS_WITH_WOL=OFF \
             -DLWS_WITH_TLS_SESSIONS=OFF \
             -DLWS_WITH_GENCRYPTO=ON \
+            -DLWS_WITH_SCHANNEL=OFF \
             -DDISABLE_WERROR=ON \
             -DLWS_CTEST_INTERNET_AVAILABLE=OFF \
             ..
