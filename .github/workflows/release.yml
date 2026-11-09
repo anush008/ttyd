@@ -40,4 +40,4 @@ jobs:
         with:
           artifacts: build/*
           allowUpdates: true
-          draft: true
+          draft: false
