@@ -443,8 +443,29 @@ static void wait_cb(void *arg) {
   uv_async_send(&process->async);
 }
 
+// most output that a background process can still write to the pty after the process exited
+#define MAX_EXIT_OUTPUT (1024 * 1024)
+
+// pass on the output that the process wrote before it exited, the pty is closed after the exit callback
+static void drain_output(pty_process *process) {
+  char buf[16 * 1024];
+  size_t total = 0;
+  int flags = fcntl(process->pty, F_GETFL);
+  if (flags < 0 || fcntl(process->pty, F_SETFL, flags | O_NONBLOCK) < 0) return;
+  while (total < MAX_EXIT_OUTPUT) {
+    ssize_t n;
+    do
+      n = read(process->pty, buf, sizeof(buf));
+    while (n < 0 && errno == EINTR);
+    if (n <= 0) break;
+    total += (size_t) n;
+    process->read_cb(process, pty_buf_init(buf, (size_t) n), false);
+  }
+}
+
 static void async_cb(uv_async_t *async) {
   pty_process *process = (pty_process *) async->data;
+  drain_output(process);
   process->exit_cb(process);
 
   uv_close((uv_handle_t *) async, async_free_cb);

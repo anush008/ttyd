@@ -27,6 +27,7 @@ enum Command {
     OUTPUT = '0',
     SET_WINDOW_TITLE = '1',
     SET_PREFERENCES = '2',
+    PROCESS_EXIT = '3',
 
     // client side
     INPUT = '0',
@@ -130,6 +131,7 @@ export class Xterm {
     private reconnect = true;
     private doReconnect = true;
     private closeOnDisconnect = false;
+    private exitStatus?: number;
 
     private writeFunc = (data: ArrayBuffer) => this.writeData(new Uint8Array(data));
 
@@ -241,14 +243,14 @@ export class Xterm {
         if (this.written > limit) {
             terminal.write(data, () => {
                 this.pending = Math.max(this.pending - 1, 0);
-                if (this.pending < lowWater) {
-                    this.socket?.send(textEncoder.encode(Command.RESUME));
+                if (this.pending < lowWater && this.socket?.readyState === WebSocket.OPEN) {
+                    this.socket.send(textEncoder.encode(Command.RESUME));
                 }
             });
             this.pending++;
             this.written = 0;
-            if (this.pending > highWater) {
-                this.socket?.send(textEncoder.encode(Command.PAUSE));
+            if (this.pending > highWater && this.socket?.readyState === WebSocket.OPEN) {
+                this.socket.send(textEncoder.encode(Command.PAUSE));
             }
         } else {
             terminal.write(data);
@@ -308,14 +310,17 @@ export class Xterm {
 
     @bind
     private onSocketClose(event: CloseEvent) {
-        console.log(`[ttyd] websocket connection closed with code: ${event.code}`);
+        // after the process exited, the client closed the connection, use the status that the server sent
+        const code = this.exitStatus ?? event.code;
+        this.exitStatus = undefined;
+        console.log(`[ttyd] websocket connection closed with code: ${code}`);
 
         const { refreshToken, connect, doReconnect, overlayAddon } = this;
         overlayAddon.showOverlay('Connection Closed');
         this.dispose();
 
         // 1000: CLOSE_NORMAL
-        if (event.code !== 1000 && doReconnect) {
+        if (code !== 1000 && doReconnect) {
             overlayAddon.showOverlay('Reconnecting...');
             void refreshToken().then(connect);
         } else if (this.closeOnDisconnect) {
@@ -381,6 +386,12 @@ export class Xterm {
             case Command.SET_WINDOW_TITLE:
                 this.title = textDecoder.decode(data);
                 document.title = this.title;
+                break;
+            case Command.PROCESS_EXIT:
+                // the process exited and all output came before this message, so close the connection now.
+                // the server waits for this, a close from the server could make the browser drop unread output.
+                this.exitStatus = Number.parseInt(textDecoder.decode(data), 10) || 1000;
+                this.socket?.close(1000);
                 break;
             case Command.SET_PREFERENCES:
                 this.applyPreferences({

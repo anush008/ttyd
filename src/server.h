@@ -15,6 +15,7 @@
 #define OUTPUT '0'
 #define SET_WINDOW_TITLE '1'
 #define SET_PREFERENCES '2'
+#define PROCESS_EXIT '3'
 
 // url paths
 struct endpoints {
@@ -56,6 +57,7 @@ struct pss_tty {
   pty_buf_t *pty_buf;
 
   int lws_close_status;
+  bool exit_sent;  // the client was told that the process exited
 };
 
 typedef struct {

@@ -19,6 +19,9 @@
 // seconds a client has to send the JSON_DATA message after the websocket is established
 #define INITIAL_MESSAGE_TIMEOUT 30
 
+// seconds to wait for the client to close the connection after the process exited
+#define EXIT_CLOSE_TIMEOUT 10
+
 // initial message list
 static char initial_cmds[] = {SET_WINDOW_TITLE, SET_PREFERENCES};
 
@@ -218,6 +221,15 @@ static void wsi_output(struct lws *wsi, pty_buf_t *buf) {
   free(message);
 }
 
+// tell the client that the process exited, the message carries the close status that the client must use
+static int send_exit_message(struct lws *wsi, int status) {
+  unsigned char message[LWS_PRE + 16];
+  unsigned char *p = message + LWS_PRE;
+  int n = snprintf((char *)p, sizeof(message) - LWS_PRE, "%c%d", PROCESS_EXIT, status);
+  if (n < 0 || (size_t)n >= sizeof(message) - LWS_PRE) return -1;
+  return lws_write(wsi, p, (size_t)n, LWS_WRITE_BINARY) < n ? -1 : 0;
+}
+
 // close the connection and drop any data still buffered for it.
 // lws may ignore the return value of LWS_CALLBACK_RECEIVE (eg: with permessage-deflate), so kill it async.
 static int close_ws(struct lws *wsi, struct pss_tty *pss, enum lws_close_status status) {
@@ -289,6 +301,7 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
       pss->wsi = wsi;
       lws_set_timeout(wsi, PENDING_TIMEOUT_USER_OK, INITIAL_MESSAGE_TIMEOUT);
       pss->lws_close_status = LWS_CLOSE_STATUS_NOSTATUS;
+      pss->exit_sent = false;
 
       if (server->url_arg) {
         while (lws_hdr_copy_fragment(wsi, buf, sizeof(buf), WSI_TOKEN_HTTP_URI_ARGS, n++) > 0) {
@@ -328,16 +341,33 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
         break;
       }
 
-      if (pss->lws_close_status > LWS_CLOSE_STATUS_NOSTATUS) {
-        lws_close_reason(wsi, pss->lws_close_status, NULL, 0);
-        return 1;
-      }
-
       if (pss->pty_buf != NULL) {
         wsi_output(wsi, pss->pty_buf);
         pty_buf_free(pss->pty_buf);
         pss->pty_buf = NULL;
         if (!pss->paused) pty_resume(pss->process);
+        // send the exit message on the next writable callback, after all of this output
+        if (pss->lws_close_status > LWS_CLOSE_STATUS_NOSTATUS) lws_callback_on_writable(wsi);
+        break;
+      }
+
+      if (pss->lws_close_status > LWS_CLOSE_STATUS_NOSTATUS && !pss->exit_sent) {
+        // the client closes the connection after it read all output. if the server closes it while a client
+        // message is still unread, the kernel resets the connection and the client loses the output it did not read.
+        if (send_exit_message(wsi, pss->lws_close_status) < 0) {
+          lws_close_reason(wsi, pss->lws_close_status, NULL, 0);
+          return 1;
+        }
+        pss->exit_sent = true;
+        lws_set_timer_usecs(wsi, EXIT_CLOSE_TIMEOUT * LWS_USEC_PER_SEC);
+      }
+      break;
+
+    case LWS_CALLBACK_TIMER:
+      // a client that does not know the exit message never closes the connection
+      if (pss->exit_sent) {
+        lws_close_reason(wsi, pss->lws_close_status, NULL, 0);
+        return -1;
       }
       break;
 
@@ -375,7 +405,8 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
 
       switch (command) {
         case INPUT:
-          if (!server->writable || pss->len < 2) break;
+          // the process may have exited, input that arrives before the client closes the connection is dropped
+          if (!server->writable || pss->len < 2 || pss->process == NULL) break;
           int err = pty_write(pss->process, pty_buf_init(pss->buffer + 1, pss->len - 1));
           if (err) {
             lwsl_err("uv_write: %s (%s)\n", uv_err_name(err), uv_strerror(err));
@@ -398,7 +429,8 @@ int callback_tty(struct lws *wsi, enum lws_callback_reasons reason, void *user, 
           if (pss->pty_buf == NULL) pty_resume(pss->process);
           break;
         case JSON_DATA:
-          if (pss->process != NULL) break;
+          // one process per connection, a client can not start another one after the process exited
+          if (pss->process != NULL || pss->lws_close_status > LWS_CLOSE_STATUS_NOSTATUS) break;
           uint16_t columns = 0;
           uint16_t rows = 0;
           json_object *obj = parse_window_size(pss->buffer, pss->len, &columns, &rows);
