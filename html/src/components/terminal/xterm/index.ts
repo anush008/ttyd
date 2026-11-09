@@ -66,11 +66,14 @@ export interface XtermOptions {
     termOptions: ITerminalOptions;
 }
 
-// OSC 52: allow programs to set the clipboard, but never let terminal output read it
+// OSC 52: allow programs to set the clipboard, but never let terminal output read it.
+// an empty selection (sent by tmux) means the system clipboard too
 const writeOnlyClipboard: IClipboardProvider = {
     readText: () => '',
     writeText: async (selection: ClipboardSelectionType, text: string) => {
-        if (selection === ClipboardSelectionType.SYSTEM) await navigator.clipboard.writeText(text);
+        if (selection === ClipboardSelectionType.SYSTEM || (selection as string) === '') {
+            await navigator.clipboard.writeText(text);
+        }
     },
 };
 
