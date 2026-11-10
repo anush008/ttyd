@@ -27,6 +27,9 @@ export class CursorAddon implements ITerminalAddon {
     private focused = false;
     private cellWidth = 0;
     private cellHeight = 0;
+    // the grid size that the cell size was measured for
+    private measuredCols = 0;
+    private measuredRows = 0;
 
     private frame?: number;
     private blinkTimer?: number;
@@ -157,11 +160,19 @@ export class CursorAddon implements ITerminalAddon {
 
     @bind
     private measure() {
+        this.readCellSize();
+        this.onJump();
+    }
+
+    // fractional pixels, a rounded screen size would move the cursor off the cells at the far right
+    private readCellSize() {
         const { screen, terminal } = this;
         if (!screen || !terminal.cols || !terminal.rows) return;
-        this.cellWidth = screen.clientWidth / terminal.cols;
-        this.cellHeight = screen.clientHeight / terminal.rows;
-        this.onJump();
+        const rect = screen.getBoundingClientRect();
+        this.cellWidth = rect.width / terminal.cols;
+        this.cellHeight = rect.height / terminal.rows;
+        this.measuredCols = terminal.cols;
+        this.measuredRows = terminal.rows;
     }
 
     @bind
@@ -197,7 +208,10 @@ export class CursorAddon implements ITerminalAddon {
     @bind
     private update() {
         this.frame = undefined;
-        const { terminal, node, cellWidth, cellHeight } = this;
+        const { terminal, node } = this;
+        // the grid changed size before the resize observer saw the new screen size
+        if (terminal.cols !== this.measuredCols || terminal.rows !== this.measuredRows) this.readCellSize();
+        const { cellWidth, cellHeight } = this;
         if (!cellWidth || !cellHeight) return;
 
         const buffer = terminal.buffer.active;

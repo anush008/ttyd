@@ -9,7 +9,7 @@ import { ImageAddon } from '@xterm/addon-image';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CursorAddon, CursorShape } from './addons/cursor';
 import { OverlayAddon } from './addons/overlay';
-import { TouchAddon } from './addons/touch';
+import { MAX_FONT_SIZE, MIN_FONT_SIZE, TouchAddon } from './addons/touch';
 import { ZmodemAddon } from './addons/zmodem';
 
 import '@xterm/xterm/css/xterm.css';
@@ -108,24 +108,54 @@ const urlOptionValues: { [key: string]: string[] } = {
     unicodeVersion: ['6', '11'],
 };
 
-const FONT_SIZE_KEY = 'ttyd.fontSize';
+// phones and tablets: a touch screen is the main input, so the user can pinch to set the font size
+export const touchScreen = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+// one size for each ttyd on this origin
+const FONT_SIZE_KEY = `ttyd.fontSize:${window.location.pathname}`;
 
-// the font size that the user set with a pinch on this device
 function savedFontSize(): number | undefined {
     try {
         const size = Number(localStorage.getItem(FONT_SIZE_KEY));
-        return size > 0 ? size : undefined;
+        return size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE ? size : undefined;
     } catch {
         return undefined;
     }
 }
 
-// the control character that ctrl and a key make, eg: ctrl+c is \x03
+function saveFontSize(size: number | undefined) {
+    try {
+        if (size === undefined) localStorage.removeItem(FONT_SIZE_KEY);
+        else localStorage.setItem(FONT_SIZE_KEY, String(size));
+    } catch {
+        // the size is not kept, eg: in a private window
+    }
+}
+
+// the control characters of a US keyboard, the same as xterm.js sends for ctrl and these keys
+const CTRL_KEYS: { [key: string]: string } = {
+    ' ': '\x00',
+    '2': '\x00',
+    '@': '\x00',
+    '3': '\x1b',
+    '[': '\x1b',
+    '4': '\x1c',
+    '\\': '\x1c',
+    '5': '\x1d',
+    ']': '\x1d',
+    '6': '\x1e',
+    '^': '\x1e',
+    '7': '\x1f',
+    '/': '\x1f',
+    '-': '\x1f',
+    _: '\x1f',
+    '8': '\x7f',
+    '?': '\x7f',
+};
+
+// the control character that ctrl and a key make, eg: ctrl+c is \x03. other keys are sent as they are.
 function ctrlChar(c: string): string {
-    if (c === ' ') return '\x00';
-    if (c === '?') return '\x7f';
-    const code = c.toUpperCase().charCodeAt(0);
-    return code >= 0x40 && code <= 0x5f ? String.fromCharCode(code - 0x40) : c;
+    if (/^[a-zA-Z]$/.test(c)) return String.fromCharCode(c.charCodeAt(0) & 0x1f);
+    return CTRL_KEYS[c] ?? c;
 }
 
 function toDisposable(f: () => void): IDisposable {
@@ -165,7 +195,11 @@ export class Xterm {
     private closeOnDisconnect = false;
     private exitStatus?: number;
     private modifiers: Modifiers = { ctrl: false, alt: false };
+    private pasting = false;
     private fitFrame?: number;
+    private resizeObserver?: ResizeObserver;
+    // the font size from the server and the URL, a pinch back to it forgets the saved size
+    private defaultFontSize?: number;
 
     private writeFunc = (data: ArrayBuffer) => this.writeData(new Uint8Array(data));
 
@@ -175,11 +209,23 @@ export class Xterm {
         private onModifiers: (modifiers: Modifiers) => void = () => {},
     ) {}
 
+    // drops the listeners of a connection, the terminal stays for the next one
     dispose() {
         for (const d of this.disposables) {
             d.dispose();
         }
         this.disposables.length = 0;
+    }
+
+    // the component is gone: drop everything
+    destroy() {
+        this.dispose();
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = undefined;
+        if (this.fitFrame) cancelAnimationFrame(this.fitFrame);
+        this.fitFrame = undefined;
+        this.socket?.close(1000);
+        this.terminal?.dispose();
     }
 
     @bind
@@ -242,9 +288,19 @@ export class Xterm {
             this.touchAddon = new TouchAddon(this.setFontSize);
             terminal.loadAddon(this.touchAddon);
         }
-        this.syncTheme();
+        this.syncPageBackground();
+        // text that the user pastes is sent as it is, a latched ctrl or alt waits for the next key
+        terminal.element?.addEventListener(
+            'paste',
+            () => {
+                this.pasting = true;
+                setTimeout(() => (this.pasting = false));
+            },
+            true,
+        );
         // fit when the container changes size: window resize, rotation, on-screen keyboard, the keys bar
-        new ResizeObserver(this.scheduleFit).observe(parent);
+        this.resizeObserver = new ResizeObserver(this.scheduleFit);
+        this.resizeObserver.observe(parent);
     }
 
     @bind
@@ -257,26 +313,21 @@ export class Xterm {
     }
 
     // fill the page around the terminal with the terminal background
-    @bind
-    private syncTheme() {
+    private syncPageBackground() {
         const background = this.terminal.options.theme?.background;
         if (background) {
             document.body.style.backgroundColor = background;
             document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background);
         }
-        this.cursorAddon?.syncTheme();
     }
 
+    // a pinch changed the font size
     @bind
     private setFontSize(size: number) {
         this.terminal.options.fontSize = size;
         this.fitAddon.fit();
         this.overlayAddon.showOverlay(`${size}px`, 400);
-        try {
-            localStorage.setItem(FONT_SIZE_KEY, String(size));
-        } catch {
-            // the size is not kept, eg: in a private window
-        }
+        if (touchScreen) saveFontSize(size === this.defaultFontSize ? undefined : size);
     }
 
     @bind
@@ -294,13 +345,15 @@ export class Xterm {
         return modifiers;
     }
 
-    // apply the latched modifiers to text typed on the on-screen keyboard
+    // apply the latched modifiers to one key typed on the on-screen keyboard.
+    // escape sequences (a hardware keyboard, the mouse) and longer text (a paste, a word from the keyboard)
+    // are sent as they are, and the modifiers wait for the next key.
     private applyModifiers(data: string): string {
-        // escape sequences come from a hardware keyboard or the mouse, they keep their own modifiers
-        if ((!this.modifiers.ctrl && !this.modifiers.alt) || data === '' || data[0] === '\x1b') return data;
+        if ((!this.modifiers.ctrl && !this.modifiers.alt) || this.pasting) return data;
+        const chars = Array.from(data);
+        if (chars.length !== 1 || data === '\x1b') return data;
         const { ctrl, alt } = this.takeModifiers();
-        const [first, ...rest] = Array.from(data);
-        return (alt ? '\x1b' : '') + (ctrl ? ctrlChar(first) : first) + rest.join('');
+        return (alt ? '\x1b' : '') + (ctrl ? ctrlChar(data) : data);
     }
 
     // a key from the extra keys bar
@@ -333,7 +386,13 @@ export class Xterm {
     public async paste() {
         try {
             const text = await navigator.clipboard.readText();
-            if (text) this.terminal.paste(text);
+            if (!text) return;
+            this.pasting = true;
+            try {
+                this.terminal.paste(text);
+            } finally {
+                this.pasting = false;
+            }
         } catch {
             this.overlayAddon.showOverlay('Allow clipboard access to paste', 1500);
         }
@@ -532,13 +591,18 @@ export class Xterm {
                 this.exitStatus = Number.parseInt(textDecoder.decode(data), 10) || 1000;
                 this.socket?.close(1000);
                 break;
-            case Command.SET_PREFERENCES:
-                this.applyPreferences({
-                    ...this.options.clientOptions,
-                    ...JSON.parse(textDecoder.decode(data)),
-                    ...this.parseOptsFromUrlQuery(window.location.search),
-                } as Preferences);
+            case Command.SET_PREFERENCES: {
+                const urlPrefs = this.parseOptsFromUrlQuery(window.location.search);
+                this.applyPreferences(
+                    {
+                        ...this.options.clientOptions,
+                        ...JSON.parse(textDecoder.decode(data)),
+                        ...urlPrefs,
+                    } as Preferences,
+                    urlPrefs.fontSize !== undefined,
+                );
                 break;
+            }
             default:
                 console.warn(`[ttyd] unknown command: ${cmd}`);
                 break;
@@ -546,7 +610,7 @@ export class Xterm {
     }
 
     @bind
-    private applyPreferences(prefs: Preferences) {
+    private applyPreferences(prefs: Preferences, urlFontSize = false) {
         const { terminal, fitAddon, register } = this;
         if (prefs.enableZmodem || prefs.enableTrzsz) {
             this.zmodemAddon = new ZmodemAddon({
@@ -656,13 +720,18 @@ export class Xterm {
                         terminal.options[key] = value;
                     }
                     if (key.indexOf('font') === 0) fitAddon.fit();
-                    if (key === 'theme') this.syncTheme();
+                    if (key === 'theme') {
+                        this.syncPageBackground();
+                        this.cursorAddon?.syncTheme();
+                    }
                     break;
             }
         }
 
-        // a size that the user picked with a pinch on this device wins over the server default
-        const fontSize = savedFontSize();
+        // on a touch screen, a size that the user picked with a pinch wins over the server default.
+        // a font size in the URL wins over both.
+        this.defaultFontSize = terminal.options.fontSize;
+        const fontSize = touchScreen && !urlFontSize ? savedFontSize() : undefined;
         if (fontSize && fontSize !== terminal.options.fontSize) {
             terminal.options.fontSize = fontSize;
             fitAddon.fit();

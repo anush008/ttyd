@@ -1,6 +1,6 @@
 import { bind } from 'decko';
 import { Component, h } from 'preact';
-import { Modifiers, Xterm, XtermOptions } from './xterm';
+import { Modifiers, touchScreen, Xterm, XtermOptions } from './xterm';
 import { KeyBar } from './keybar';
 
 import '@xterm/xterm/css/xterm.css';
@@ -14,9 +14,6 @@ interface State {
     modal: boolean;
     modifiers: Modifiers;
 }
-
-// phones and tablets, a touch screen is the main input
-const touchScreen = window.matchMedia?.('(pointer: coarse)').matches ?? false;
 
 export class Terminal extends Component<Props, State> {
     private container: HTMLElement;
@@ -38,7 +35,7 @@ export class Terminal extends Component<Props, State> {
 
     componentWillUnmount() {
         window.visualViewport?.removeEventListener('resize', this.fitViewport);
-        this.xterm.dispose();
+        this.xterm.destroy();
     }
 
     render({ id }: Props, { modal, modifiers }: State) {
