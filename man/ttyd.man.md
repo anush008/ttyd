@@ -125,6 +125,7 @@ ttyd has a mechanism to pass server side command-line arguments to the browser p
 - `-t rendererType=dom`: use the `dom` renderer for xterm.js (default: `webgl`)
 - `-t disableLeaveAlert=true`: disable the leave page alert
 - `-t disableResizeOverlay=true`: disable the terminal resize overlay
+- `-t smoothCursor=false`: use the cursor of xterm.js instead of the animated cursor
 - `-t disableReconnect=true`: prevent the terminal from reconnecting on connection error/close
 - `-t enableZmodem=true`: enable [ZMODEM](https://en.wikipedia.org/wiki/ZMODEM) / [lrzsz](https://ohse.de/uwe/software/lrzsz.html) file transfer support
 - `-t enableTrzsz=true`: enable [trzsz](https://trzsz.github.io) file transfer support

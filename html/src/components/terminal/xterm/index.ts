@@ -7,7 +7,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { ImageAddon } from '@xterm/addon-image';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { CursorAddon, CursorShape } from './addons/cursor';
 import { OverlayAddon } from './addons/overlay';
+import { TouchAddon } from './addons/touch';
 import { ZmodemAddon } from './addons/zmodem';
 
 import '@xterm/xterm/css/xterm.css';
@@ -51,6 +53,13 @@ export interface ClientOptions {
     trzszDragInitTimeout: number;
     unicodeVersion: string;
     closeOnDisconnect: boolean;
+    smoothCursor: boolean;
+}
+
+// one-shot modifiers from the extra keys bar, they apply to the next key
+export interface Modifiers {
+    ctrl: boolean;
+    alt: boolean;
 }
 
 export interface FlowControl {
@@ -91,12 +100,33 @@ const urlOptions: { [key: string]: 'boolean' | 'number' | 'string' } = {
     disableLeaveAlert: 'boolean',
     disableResizeOverlay: 'boolean',
     disableReconnect: 'boolean',
+    smoothCursor: 'boolean',
 };
 const urlOptionValues: { [key: string]: string[] } = {
     cursorStyle: ['block', 'underline', 'bar'],
     rendererType: ['dom', 'webgl'],
     unicodeVersion: ['6', '11'],
 };
+
+const FONT_SIZE_KEY = 'ttyd.fontSize';
+
+// the font size that the user set with a pinch on this device
+function savedFontSize(): number | undefined {
+    try {
+        const size = Number(localStorage.getItem(FONT_SIZE_KEY));
+        return size > 0 ? size : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+// the control character that ctrl and a key make, eg: ctrl+c is \x03
+function ctrlChar(c: string): string {
+    if (c === ' ') return '\x00';
+    if (c === '?') return '\x7f';
+    const code = c.toUpperCase().charCodeAt(0);
+    return code >= 0x40 && code <= 0x5f ? String.fromCharCode(code - 0x40) : c;
+}
 
 function toDisposable(f: () => void): IDisposable {
     return { dispose: f };
@@ -119,6 +149,8 @@ export class Xterm {
     private overlayAddon = new OverlayAddon();
     private clipboardAddon = new ClipboardAddon(undefined, writeOnlyClipboard);
     private webLinksAddon = new WebLinksAddon();
+    private cursorAddon?: CursorAddon;
+    private touchAddon?: TouchAddon;
     private webglAddon?: WebglAddon;
     private zmodemAddon?: ZmodemAddon;
 
@@ -132,12 +164,15 @@ export class Xterm {
     private doReconnect = true;
     private closeOnDisconnect = false;
     private exitStatus?: number;
+    private modifiers: Modifiers = { ctrl: false, alt: false };
+    private fitFrame?: number;
 
     private writeFunc = (data: ArrayBuffer) => this.writeData(new Uint8Array(data));
 
     constructor(
         private options: XtermOptions,
         private sendCb: () => void,
+        private onModifiers: (modifiers: Modifiers) => void = () => {},
     ) {}
 
     dispose() {
@@ -198,11 +233,115 @@ export class Xterm {
 
         terminal.open(parent);
         fitAddon.fit();
+
+        if (this.options.clientOptions.smoothCursor) {
+            this.cursorAddon = new CursorAddon();
+            terminal.loadAddon(this.cursorAddon);
+        }
+        if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+            this.touchAddon = new TouchAddon(this.setFontSize);
+            terminal.loadAddon(this.touchAddon);
+        }
+        this.syncTheme();
+        // fit when the container changes size: window resize, rotation, on-screen keyboard, the keys bar
+        new ResizeObserver(this.scheduleFit).observe(parent);
+    }
+
+    @bind
+    private scheduleFit() {
+        if (this.fitFrame) return;
+        this.fitFrame = requestAnimationFrame(() => {
+            this.fitFrame = undefined;
+            this.fitAddon.fit();
+        });
+    }
+
+    // fill the page around the terminal with the terminal background
+    @bind
+    private syncTheme() {
+        const background = this.terminal.options.theme?.background;
+        if (background) {
+            document.body.style.backgroundColor = background;
+            document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background);
+        }
+        this.cursorAddon?.syncTheme();
+    }
+
+    @bind
+    private setFontSize(size: number) {
+        this.terminal.options.fontSize = size;
+        this.fitAddon.fit();
+        this.overlayAddon.showOverlay(`${size}px`, 400);
+        try {
+            localStorage.setItem(FONT_SIZE_KEY, String(size));
+        } catch {
+            // the size is not kept, eg: in a private window
+        }
+    }
+
+    @bind
+    public toggleModifier(mod: keyof Modifiers) {
+        this.modifiers = { ...this.modifiers, [mod]: !this.modifiers[mod] };
+        this.onModifiers(this.modifiers);
+    }
+
+    private takeModifiers(): Modifiers {
+        const modifiers = this.modifiers;
+        if (modifiers.ctrl || modifiers.alt) {
+            this.modifiers = { ctrl: false, alt: false };
+            this.onModifiers(this.modifiers);
+        }
+        return modifiers;
+    }
+
+    // apply the latched modifiers to text typed on the on-screen keyboard
+    private applyModifiers(data: string): string {
+        // escape sequences come from a hardware keyboard or the mouse, they keep their own modifiers
+        if ((!this.modifiers.ctrl && !this.modifiers.alt) || data === '' || data[0] === '\x1b') return data;
+        const { ctrl, alt } = this.takeModifiers();
+        const [first, ...rest] = Array.from(data);
+        return (alt ? '\x1b' : '') + (ctrl ? ctrlChar(first) : first) + rest.join('');
+    }
+
+    // a key from the extra keys bar
+    @bind
+    public sendKey(key: string) {
+        const { ctrl, alt } = this.takeModifiers();
+        const mod = 1 + (alt ? 2 : 0) + (ctrl ? 4 : 0);
+        const app = this.terminal.modes.applicationCursorKeysMode;
+        const cursor: { [key: string]: string } = {
+            ArrowUp: 'A',
+            ArrowDown: 'B',
+            ArrowRight: 'C',
+            ArrowLeft: 'D',
+            Home: 'H',
+            End: 'F',
+        };
+        let seq: string;
+        if (cursor[key]) {
+            seq = mod > 1 ? `\x1b[1;${mod}${cursor[key]}` : `\x1b${app ? 'O' : '['}${cursor[key]}`;
+        } else if (key === 'PageUp' || key === 'PageDown') {
+            seq = `\x1b[${key === 'PageUp' ? 5 : 6}${mod > 1 ? `;${mod}` : ''}~`;
+        } else {
+            const plain = key === 'Escape' ? '\x1b' : key === 'Tab' ? '\t' : ctrl ? ctrlChar(key) : key;
+            seq = (alt ? '\x1b' : '') + plain;
+        }
+        this.terminal.input(seq, true);
+    }
+
+    @bind
+    public async paste() {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) this.terminal.paste(text);
+        } catch {
+            this.overlayAddon.showOverlay('Allow clipboard access to paste', 1500);
+        }
     }
 
     @bind
     private initListeners() {
-        const { terminal, fitAddon, overlayAddon, register, sendData } = this;
+        const { terminal, overlayAddon, register, sendData } = this;
         register(
             terminal.onTitleChange(data => {
                 if (data && data !== '' && !this.titleFixed) {
@@ -210,7 +349,7 @@ export class Xterm {
                 }
             }),
         );
-        register(terminal.onData(data => sendData(data)));
+        register(terminal.onData(data => sendData(this.applyModifiers(data))));
         register(terminal.onBinary(data => sendData(Uint8Array.from(data, v => v.charCodeAt(0)))));
         register(
             terminal.onResize(({ cols, rows }) => {
@@ -230,7 +369,6 @@ export class Xterm {
                 this.overlayAddon?.showOverlay('\u2702', 200);
             }),
         );
-        register(addEventListener(window, 'resize', () => fitAddon.fit()));
         register(addEventListener(window, 'beforeunload', this.onWindowUnload));
     }
 
@@ -297,6 +435,7 @@ export class Xterm {
 
         if (this.opened) {
             terminal.reset();
+            this.cursorAddon?.reset();
             terminal.options.disableStdin = false;
             overlayAddon.showOverlay('Reconnected', 300);
         } else {
@@ -471,10 +610,25 @@ export class Xterm {
                     }
                     break;
                 case 'titleFixed':
-                    if (!value || value === '') return;
+                    if (!value || value === '') break;
                     console.log(`[ttyd] setting fixed title: ${value}`);
                     this.titleFixed = value;
                     document.title = value;
+                    break;
+                case 'smoothCursor':
+                    if (!value && this.cursorAddon) {
+                        this.cursorAddon.dispose();
+                        this.cursorAddon = undefined;
+                        console.log('[ttyd] smooth cursor disabled');
+                    }
+                    break;
+                case 'cursorStyle':
+                    if (this.cursorAddon) this.cursorAddon.setDefaultShape(value as CursorShape);
+                    else terminal.options.cursorStyle = value;
+                    break;
+                case 'cursorBlink':
+                    if (this.cursorAddon) this.cursorAddon.setDefaultBlink(value);
+                    else terminal.options.cursorBlink = value;
                     break;
                 case 'isWindows':
                     if (value) console.log('[ttyd] is windows');
@@ -502,8 +656,16 @@ export class Xterm {
                         terminal.options[key] = value;
                     }
                     if (key.indexOf('font') === 0) fitAddon.fit();
+                    if (key === 'theme') this.syncTheme();
                     break;
             }
+        }
+
+        // a size that the user picked with a pinch on this device wins over the server default
+        const fontSize = savedFontSize();
+        if (fontSize && fontSize !== terminal.options.fontSize) {
+            terminal.options.fontSize = fontSize;
+            fitAddon.fit();
         }
     }
 
