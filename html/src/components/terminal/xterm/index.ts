@@ -298,9 +298,31 @@ export class Xterm {
             },
             true,
         );
+        if (terminal.textarea) this.keepInputEmpty(terminal.textarea);
         // fit when the container changes size: window resize, rotation, on-screen keyboard, the keys bar
         this.resizeObserver = new ResizeObserver(this.scheduleFit);
         this.resizeObserver.observe(parent);
+    }
+
+    // phone keyboards read the hidden input field as the text that the user writes. xterm.js never clears it, so
+    // the keyboard sees every earlier command, and autocorrect and suggestions rewrite those words, eg: after a period.
+    // keep the field empty between inputs, and ask the keyboard for no suggestions.
+    private keepInputEmpty(textarea: HTMLTextAreaElement) {
+        textarea.setAttribute('autocomplete', 'off');
+        let composing = false;
+        // xterm.js reads the composed text from the field in a timeout after compositionend, clear it after that
+        const clear = () =>
+            setTimeout(() => {
+                if (!composing && textarea.value !== '') textarea.value = '';
+            });
+        textarea.addEventListener('compositionstart', () => (composing = true));
+        textarea.addEventListener('compositionend', () => {
+            composing = false;
+            clear();
+        });
+        textarea.addEventListener('input', () => {
+            if (!composing) clear();
+        });
     }
 
     @bind
